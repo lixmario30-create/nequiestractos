@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Procesador de Extractos Nequi a Excel</title>
+    <!-- CSS Estilos -->
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        body {
+            background-color: #f4f6f9;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .card {
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            width: 100%;
+            max-width: 600px;
+            padding: 30px;
+            text-align: center;
+        }
+        h2 {
+            color: #200020;
+            margin-bottom: 8px;
+        }
+        p {
+            color: #666;
+            font-size: 14px;
+            margin-top: 0;
+            margin-bottom: 24px;
+        }
+        .drop-zone {
+            border: 2px dashed #ff007f;
+            border-radius: 8px;
+            padding: 40px 20px;
+            background-color: #fff0f6;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .drop-zone:hover, .drop-zone.dragover {
+            background-color: #ffe6f0;
+            border-color: #cc0066;
+        }
+        .drop-zone p {
+            margin: 0;
+            font-weight: 600;
+            color: #ff007f;
+        }
+        .status {
+            margin-top: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+        }
+        .success { color: #2e7d32; }
+        .error { color: #c62828; }
+    </style>
+
+    <!-- PDF.js para leer PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- SheetJS para exportar Excel -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<div class="card">
+    <h2>Extractos Nequi ➔ Excel</h2>
+    <p>Arrastra y suelta tu extracto PDF de Nequi para consolidar la información automáticamente.</p>
+    
+    <div class="drop-zone" id="dropZone">
+        <p>Arrastra tu archivo PDF aquí o haz clic para seleccionar</p>
+        <input type="file" id="fileInput" accept="application/pdf" style="display: none;">
+    </div>
+
+    <div class="status" id="status"></div>
+</div>
+
+<script>
+    // Configuración de PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const statusDiv = document.getElementById('status');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('dragover');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+            handleFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+        }
+    });
+
+    async function handleFile(file) {
+        if (file.type !== 'application/pdf') {
+            setStatus('Por favor, sube un archivo en formato PDF.', 'error');
+            return;
+        }
+
+        setStatus('Procesando extracto...', '');
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            
+            let fullTextLines = [];
+
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageLines = textContent.items.map(item => item.str.trim()).filter(line => line.length > 0);
+                fullTextLines.push(...pageLines);
+            }
+
+            const data = parseNequiPDF(fullTextLines);
+            generateExcel(data, file.name.replace('.pdf', '.xlsx'));
+            setStatus('¡Excel generado y descargado con éxito!', 'success');
+        } catch (err) {
+            console.error(err);
+            setStatus('Error al leer el archivo PDF. Verifica que sea un extracto válido de Nequi.', 'error');
+        }
+    }
+
+    function setStatus(msg, type) {
+        statusDiv.textContent = msg;
+        statusDiv.className = 'status ' + type;
+    }
+
+    function parseNequiPDF(lines) {
+        const text = lines.join(' ');
+
+        // 1. Extraer Resumen
+        const resumen = {
+            saldoAnterior: parseAmount(extractBetween(text, 'Saldo anterior', 'Saldo promedio') || extractBetween(text, 'Saldo anterior', 'Total abonos')),
+            totalAbonos: parseAmount(extractBetween(text, 'Total abonos', 'Cuentas por cobrar')),
+            totalCargos: parseAmount(extractBetween(text, 'Total cargos', 'Valor de intereses')),
+            intereses: parseAmount(extractBetween(text, 'Valor de intereses pagados', 'Saldo actual') || extractBetween(text, 'Valor de intereses pagados', 'Retefuente')),
+            retefuente: parseAmount(extractBetween(text, 'Retefuente', 'Saldo actual') || extractBetween(text, 'Retefuente', 'Carrera')),
+            cuentasPorCobrar: parseAmount(extractBetween(text, 'Cuentas por cobrar', 'Total cargos') || extractBetween(text, 'Cuentas por cobrar', 'Valor de intereses')),
+            saldoActual: parseAmount(extractBetween(text, 'Saldo actual', 'Retefuente') || extractBetween(text, 'Saldo actual', 'Carrera'))
+        };
+
+        // 2. Extraer Movimientos
+        // Patrón fecha DD/MM/YYYY
+        const dateRegex = /^\d{2}\/\d{2}\/\d{4}$/;
+        const movements = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            if (dateRegex.test(lines[i])) {
+                const fecha = lines[i];
+                let descParts = [];
+                let j = i + 1;
+
+                // Capturar la descripción hasta encontrar un valor numérico/moneda
+                while (j < lines.length && !lines[j].match(/^\$-?[\d,]+(\.\d{2})?$/) && !lines[j].match(/^\$?[\d,]+(\.\d{2})?$/) && !dateRegex.test(lines[j])) {
+                    descParts.push(lines[j]);
+                    j++;
+                }
+
+                let valorStr = lines[j] || '';
+                let valor = parseAmount(valorStr);
+
+                if (descParts.length > 0 && !isNaN(valor)) {
+                    movements.push({
+                        fecha,
+                        descripcion: descParts.join(' '),
+                        valor
+                    });
+                }
+            }
+        }
+
+        // 3. Agrupar Entradas y Salidas
+        const entradasAgrupadas = {};
+        const salidasAgrupadas = {};
+
+        movements.forEach(m => {
+            let nombreConcepto = m.descripcion
+                .replace(/^De\s+/i, '')
+                .replace(/^TRANSFIYA DE\s+/i, '')
+                .replace(/^Para\s+/i, '')
+                .replace(/^ENVIO TRANSFIYA A\s+/i, '')
+                .trim();
+
+            if (m.valor > 0) {
+                if (!entradasAgrupadas[nombreConcepto]) entradasAgrupadas[nombreConcepto] = 0;
+                entradasAgrupadas[nombreConcepto] += m.valor;
+            } else {
+                if (!salidasAgrupadas[nombreConcepto]) salidasAgrupadas[nombreConcepto] = 0;
+                salidasAgrupadas[nombreConcepto] += Math.abs(m.valor);
+            }
+        });
+
+        return { resumen, entradasAgrupadas, salidasAgrupadas };
+    }
+
+    function extractBetween(text, startStr, endStr) {
+        const startIndex = text.indexOf(startStr);
+        if (startIndex === -1) return null;
+        const sub = text.substring(startIndex + startStr.length);
+        const endIndex = sub.indexOf(endStr);
+        if (endIndex === -1) return sub.trim();
+        return sub.substring(0, endIndex).replace('|', '').trim();
+    }
+
+    function parseAmount(str) {
+        if (!str) return 0;
+        let clean = str.replace(/\$/g, '').replace(/,/g, '').trim();
+        return parseFloat(clean) || 0;
+    }
+
+    function generateExcel(data, fileName) {
+        const { resumen, entradasAgrupadas, salidasAgrupadas } = data;
+
+        // Construcción de la hoja
+        const sheetData = [
+            ["RESUMEN DEL EXTRACTO"],
+            ["Saldo anterior", resumen.saldoAnterior],
+            ["Total abonos", resumen.totalAbonos],
+            ["Total cargos", resumen.totalCargos],
+            ["Valor de intereses pagados", resumen.intereses],
+            ["Retefuente", resumen.retefuente],
+            ["Cuentas por cobrar", resumen.cuentasPorCobrar],
+            ["Saldo actual", resumen.saldoActual],
+            [],
+            ["ENTRADAS Y ABONOS AGRUPADOS"],
+            ["Persona / Concepto", "Monto Total Sumado"]
+        ];
+
+        Object.keys(entradasAgrupadas).sort().forEach(persona => {
+            sheetData.push([persona, entradasAgrupadas[persona]]);
+        });
+
+        sheetData.push([]);
+        sheetData.push(["SALIDAS Y CARGOS AGRUPADOS"]);
+        sheetData.push(["Persona / Concepto", "Monto Total Sumado"]);
+
+        Object.keys(salidasAgrupadas).sort().forEach(persona => {
+            sheetData.push([persona, salidasAgrupadas[persona]]);
+        });
+
+        // Crear Libro y Hoja Excel
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+        // Formato numérico de moneda en las columnas requeridas
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        for (let R = range.s.r; R <= range.e.r; ++R) {
+            const cellRef = XLSX.utils.encode_cell({ r: R, c: 1 });
+            if (ws[cellRef] && typeof ws[cellRef].v === 'number') {
+                ws[cellRef].z = '"$"#,##0.00';
+            }
+        }
+
+        // Ancho de columnas
+        ws['!cols'] = [{ wch: 40 }, { wch: 20 }];
+
+        XLSX.utils.book_append_sheet(wb, ws, "Resumen Extracto");
+        XLSX.writeFile(wb, fileName);
+    }
+</script>
+
+</body>
+</html>
